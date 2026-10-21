@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Routage</title>
+    <link rel="icon" type="image/png" href="icon-192.png" />
+    <link rel="apple-touch-icon" href="icon.png" />
+    <meta name="theme-color" content="#143c6e" />
+    <style>
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+            background: #143c6e;
+            color: #fff;
+            font-family: system-ui, sans-serif;
+        }
+        img { width: 96px; height: 96px; }
+        a {
+            padding: 14px 22px;
+            border-radius: 10px;
+            background: #ffcc33;
+            color: #143c6e;
+            font-weight: bold;
+            text-decoration: none;
+            font-size: 17px;
+        }
+    </style>
+</head>
+<body>
+    <img src="icon.png" alt="" />
+    <p>Ouverture du routage dans Windy…</p>
+    <a id="go" href="https://www.windy.com/plugin/routage">Ouvrir le routage</a>
+    <script>
+        // Redirige immédiatement vers le plugin de routage dans Windy
+        location.replace('https://www.windy.com/plugin/routage');
+    </script>
+</body>
+</html>
