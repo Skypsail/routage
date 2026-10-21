@@ -8,6 +8,7 @@
     <link rel="apple-touch-icon" href="icon.png" />
     <meta name="theme-color" content="#143c6e" />
     <style>
+        p { text-align: center; line-height: 1.6; padding: 0 20px; }
         body {
             margin: 0;
             min-height: 100vh;
@@ -34,11 +35,19 @@
 </head>
 <body>
     <img src="icon.png" alt="" />
-    <p>Ouverture du routage dans Windy…</p>
+    <p id="msg">Ouverture du routage dans Windy…</p>
     <a id="go" href="https://www.windy.com/plugin/routage">Ouvrir le routage</a>
     <script>
-        // Redirige immédiatement vers le plugin de routage dans Windy
-        location.replace('https://www.windy.com/plugin/routage');
+        // Mode installation (adresse terminée par ?installer) : pas de redirection,
+        // et on nettoie l'adresse pour que le raccourci créé pointe sur la page normale.
+        if (location.search.includes('installer')) {
+            history.replaceState(null, '', location.pathname);
+            document.getElementById('msg').innerHTML =
+                'Menu ⋮ de Chrome → <b>Ajouter à l’écran d’accueil</b>,<br>puis nomme le raccourci « Routage ».';
+        } else {
+            // Redirige immédiatement vers le plugin de routage dans Windy
+            location.replace('https://www.windy.com/plugin/routage');
+        }
     </script>
 </body>
 </html>
