@@ -1,0 +1,45 @@
+name: positions-rdr
+
+# Récupère les positions de la Route du Rhum sur le FTP de la course
+# et les publie dans positions.json (GitHub Pages).
+on:
+    schedule:
+        - cron: '7,22,37,52 * * * *' # toutes les 15 min (GitHub peut retarder de quelques minutes)
+    workflow_dispatch: # bouton « Run workflow » pour un lancement manuel
+
+permissions:
+    contents: write
+
+concurrency:
+    group: positions
+    cancel-in-progress: false
+
+jobs:
+    fetch:
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+
+            - name: Récupérer les positions
+              env:
+                  FTP_HOSTS: ${{ secrets.FTP_HOSTS }}
+                  FTP_USER: ${{ secrets.FTP_USER }}
+                  FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+              run: python scripts/fetch_positions.py
+
+            - name: Publier si nouveau
+              run: |
+                  git config user.name "positions-bot"
+                  git config user.email "positions-bot@users.noreply.github.com"
+                  git add positions.json data/history.json
+                  if git diff --cached --quiet; then
+                    echo "Aucune nouvelle position"
+                  else
+                    git commit -m "Positions $(date -u +'%d/%m %H:%M') UTC"
+                    git push
+                  fi
