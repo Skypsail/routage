@@ -1,0 +1,42 @@
+name: gfs-longue-portee
+
+# Télécharge le vent GFS (NOAA) sur 16 jours au-dessus de l'Atlantique
+# et le publie sur la branche « gfs » (lue par le plugin via raw.githubusercontent.com).
+on:
+    schedule:
+        - cron: '35 5,11,17,23 * * *' # ~5 h 30 après chaque run GFS (00, 06, 12, 18 UTC)
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+concurrency:
+    group: gfs
+    cancel-in-progress: true
+
+jobs:
+    gfs:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+
+            - name: Installer ecCodes (lecture des fichiers GRIB)
+              run: pip install eccodes
+
+            - name: Télécharger et convertir le GFS
+              run: python scripts/fetch_gfs.py
+
+            - name: Publier sur la branche gfs
+              run: |
+                  cd gfs
+                  git init -q -b gfs
+                  git add gfs.bin gfs.json
+                  git -c user.name="gfs-bot" -c user.email="gfs-bot@users.noreply.github.com" \
+                      commit -q -m "GFS $(date -u +'%d/%m %H:%M') UTC"
+                  # Historique écrasé à chaque fois : le dépôt ne grossit pas
+                  git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gfs
