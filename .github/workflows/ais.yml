@@ -1,0 +1,47 @@
+name: ais
+
+# Relève le trafic AIS (aisstream.io) sur les zones définies dans scripts/fetch_ais.py
+# et le publie sur la branche « ais » (lue par le plugin via raw.githubusercontent.com).
+on:
+    schedule:
+        - cron: '3,18,33,48 * * * *' # toutes les 15 min (GitHub peut retarder de quelques minutes)
+    workflow_dispatch:
+
+permissions:
+    contents: write
+
+concurrency:
+    group: ais
+    cancel-in-progress: false
+
+jobs:
+    ais:
+        runs-on: ubuntu-latest
+        timeout-minutes: 6
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Récupérer le relevé précédent
+              run: |
+                  git fetch -q --depth 1 origin ais && git worktree add -q ais-previous origin/ais || echo "Premier relevé"
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+
+            - run: pip install websockets
+
+            - name: Écouter le flux AIS
+              env:
+                  AISSTREAM_KEY: ${{ secrets.AISSTREAM_KEY }}
+              run: python scripts/fetch_ais.py
+
+            - name: Publier sur la branche ais
+              run: |
+                  cd ais
+                  git init -q -b ais
+                  git add ais.json
+                  git -c user.name="ais-bot" -c user.email="ais-bot@users.noreply.github.com" \
+                      commit -q -m "AIS $(date -u +'%d/%m %H:%M') UTC"
+                  # Historique écrasé à chaque fois : le dépôt ne grossit pas
+                  git push -f -q "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ais
