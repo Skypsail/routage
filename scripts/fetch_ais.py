@@ -34,7 +34,7 @@ MAX_AGE_H = 6
 
 # Zones surveillées : [[lat_min, lon_min], [lat_max, lon_max]] — à adapter librement
 ZONES = {
-    "Manche Ouest et Bretagne": [[47.0, -7.5], [50.5, -1.0]],
+    "Manche (Ouessant → Pas-de-Calais) et Bretagne": [[47.0, -7.5], [51.6, 2.6]],
     "Golfe de Gascogne": [[43.3, -10.0], [47.0, -1.0]],
     "Guadeloupe": [[15.6, -62.3], [16.9, -60.8]],
 }
