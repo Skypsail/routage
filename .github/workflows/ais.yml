@@ -1,10 +1,12 @@
 name: ais
 
-# Relève le trafic AIS (aisstream.io) sur les zones définies dans scripts/fetch_ais.py
-# et le publie sur la branche « ais » (lue par le plugin via raw.githubusercontent.com).
+# Écoute en continu le trafic AIS (aisstream.io) sur les zones de scripts/fetch_ais.py
+# et publie ais.json toutes les 2 min 30 sur la branche « ais ».
+# Chaque lancement dure ~5 h 40 ; un lancement est programmé chaque heure : il attend
+# que le précédent se termine puis prend le relais (une seule écoute à la fois).
 on:
     schedule:
-        - cron: '3,18,33,48 * * * *' # toutes les 15 min (GitHub peut retarder de quelques minutes)
+        - cron: '11 * * * *'
     workflow_dispatch:
 
 permissions:
@@ -17,7 +19,7 @@ concurrency:
 jobs:
     ais:
         runs-on: ubuntu-latest
-        timeout-minutes: 6
+        timeout-minutes: 355
         steps:
             - uses: actions/checkout@v4
 
@@ -31,17 +33,10 @@ jobs:
 
             - run: pip install websockets
 
-            - name: Écouter le flux AIS
+            - name: Écouter le flux AIS et publier
               env:
                   AISSTREAM_KEY: ${{ secrets.AISSTREAM_KEY }}
+                  RUN_MINUTES: '340'
+                  PUBLISH_EVERY: '150'
+                  PUSH_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
               run: python scripts/fetch_ais.py
-
-            - name: Publier sur la branche ais
-              run: |
-                  cd ais
-                  git init -q -b ais
-                  git add ais.json
-                  git -c user.name="ais-bot" -c user.email="ais-bot@users.noreply.github.com" \
-                      commit -q -m "AIS $(date -u +'%d/%m %H:%M') UTC"
-                  # Historique écrasé à chaque fois : le dépôt ne grossit pas
-                  git push -f -q "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" ais
