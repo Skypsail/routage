@@ -1,10 +1,10 @@
 """Relais AIS (aisstream.io) pour le plugin de routage.
 
-Exécuté par GitHub Actions (voir .github/workflows/ais.yml) toutes les 15 min :
-  1. se connecte au flux aisstream.io pendant LISTEN_SECONDS sur les zones ZONES ;
+Exécuté par GitHub Actions (voir .github/workflows/ais.yml) :
+  1. reste connecté au flux aisstream.io pendant RUN_MINUTES (reconnexion automatique) ;
   2. garde la dernière position de chaque navire (+ nom et type s'ils sont connus) ;
-  3. fusionne avec le relevé précédent (les navires vus depuis moins de MAX_AGE_H heures) ;
-  4. écrit ais/ais.json, publié sur la branche « ais ».
+  3. toutes les PUBLISH_EVERY secondes, écrit ais/ais.json (navires vus depuis moins de
+     MAX_AGE_H heures) et le publie sur la branche « ais ».
 
 La clé aisstream.io est lue dans la variable d'environnement AISSTREAM_KEY (secret GitHub).
 AIS gratuit = réception terrestre : environ 20 à 40 milles autour des côtes, rien au grand large.
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -27,7 +28,8 @@ OUT_DIR = ROOT / "ais"
 PREVIOUS = ROOT / "ais-previous" / "ais.json"  # relevé précédent (branche ais), s'il existe
 
 URL = "wss://stream.aisstream.io/v0/stream"
-LISTEN_SECONDS = 75
+RUN_MINUTES = float(os.environ.get("RUN_MINUTES", "340"))  # durée d'un lancement (GitHub : 6 h max)
+PUBLISH_EVERY = float(os.environ.get("PUBLISH_EVERY", "150"))  # publication toutes les 2 min 30
 MAX_AGE_H = 6
 
 # Zones surveillées : [[lat_min, lon_min], [lat_max, lon_max]] — à adapter librement
@@ -106,26 +108,72 @@ def apply_message(msg: dict, vessels: dict[int, dict]) -> None:
             v["type"] = int(b["ShipType"])
 
 
-async def listen(key: str, vessels: dict[int, dict]) -> int:
-    count = 0
-    async with websockets.connect(URL, open_timeout=20, max_size=2**22) as ws:
-        await ws.send(json.dumps({
-            "APIKey": key,
-            "BoundingBoxes": list(ZONES.values()),
-            "FilterMessageTypes": list(POSITION_TYPES + STATIC_TYPES),
-        }))
-        end = time.monotonic() + LISTEN_SECONDS
-        while time.monotonic() < end:
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, end - time.monotonic()))
-            except asyncio.TimeoutError:
-                break
-            msg = json.loads(raw)
-            if "error" in msg:
-                raise RuntimeError(f"aisstream.io : {msg['error']}")
-            apply_message(msg, vessels)
-            count += 1
-    return count
+async def listen_forever(key: str, vessels: dict[int, dict], stats: dict, stop: float) -> None:
+    """Reste connecté jusqu'à l'heure stop ; se reconnecte en cas de coupure."""
+    delay = 5
+    while time.monotonic() < stop:
+        try:
+            async with websockets.connect(URL, open_timeout=20, max_size=2**22, ping_interval=30) as ws:
+                await ws.send(json.dumps({
+                    "APIKey": key,
+                    "BoundingBoxes": list(ZONES.values()),
+                    "FilterMessageTypes": list(POSITION_TYPES + STATIC_TYPES),
+                }))
+                print("Connecté à aisstream.io")
+                delay = 5
+                while time.monotonic() < stop:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=min(60, max(0.1, stop - time.monotonic())))
+                    except asyncio.TimeoutError:
+                        continue
+                    msg = json.loads(raw)
+                    if "error" in msg:
+                        raise RuntimeError(f"aisstream.io : {msg['error']}")
+                    apply_message(msg, vessels)
+                    stats["messages"] += 1
+        except RuntimeError:
+            raise  # clé refusée, etc. : inutile d'insister
+        except Exception as err:  # noqa: BLE001 — coupure réseau : on se reconnecte
+            print(f"Connexion perdue ({err}), reconnexion dans {delay} s")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 120)
+
+
+def snapshot(vessels: dict[int, dict]) -> dict:
+    limit = (time.time() - MAX_AGE_H * 3600) * 1000
+    kept = [v for v in vessels.values() if "lat" in v and v.get("t", 0) >= limit]
+    kept.sort(key=lambda v: v["mmsi"])
+    return {"updated": int(time.time() * 1000), "zones": ZONES, "vessels": kept}
+
+
+def publish(data: dict) -> None:
+    """Écrit ais/ais.json et le pousse (un seul commit, historique écrasé) sur la branche ais."""
+    OUT_DIR.mkdir(exist_ok=True)
+    (OUT_DIR / "ais.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    remote = os.environ.get("PUSH_URL")
+    if not remote:
+        return  # essai local : pas de publication
+    git = ["git", "-C", str(OUT_DIR)]
+    subprocess.run(["rm", "-rf", str(OUT_DIR / ".git")], check=True)
+    subprocess.run(git + ["init", "-q", "-b", "ais"], check=True)
+    subprocess.run(git + ["add", "ais.json"], check=True)
+    subprocess.run(git + ["-c", "user.name=ais-bot", "-c", "user.email=ais-bot@users.noreply.github.com",
+                          "commit", "-q", "-m", f"AIS {time.strftime('%d/%m %H:%M', time.gmtime())} UTC"], check=True)
+    r = subprocess.run(git + ["push", "-f", "-q", remote, "ais"], capture_output=True, text=True)
+    if r.returncode:
+        print("Publication échouée :", r.stderr.strip().replace(remote, "***"))
+
+
+async def run(key: str, vessels: dict[int, dict]) -> None:
+    stats = {"messages": 0}
+    stop = time.monotonic() + RUN_MINUTES * 60
+    listener = asyncio.create_task(listen_forever(key, vessels, stats, stop))
+    while not listener.done():
+        await asyncio.wait({listener}, timeout=PUBLISH_EVERY)
+        data = snapshot(vessels)
+        await asyncio.to_thread(publish, data)
+        print(f"{time.strftime('%H:%M:%S')} · {stats['messages']} messages · {len(data['vessels'])} navires publiés")
+    listener.result()  # remonte une éventuelle erreur (clé refusée…)
 
 
 def main() -> None:
@@ -141,24 +189,8 @@ def main() -> None:
                 vessels[int(v["mmsi"])] = v
         except (ValueError, KeyError) as err:
             print(f"Relevé précédent illisible : {err}")
-    before = len(vessels)
-
-    count = asyncio.run(listen(key, vessels))
-    print(f"{count} messages AIS reçus en {LISTEN_SECONDS} s")
-
-    limit = (time.time() - MAX_AGE_H * 3600) * 1000
-    kept = [v for v in vessels.values() if "lat" in v and v.get("t", 0) >= limit]
-    kept.sort(key=lambda v: v["mmsi"])
-    print(f"{len(kept)} navires publiés (précédent : {before})")
-
-    OUT_DIR.mkdir(exist_ok=True)
-    data = {
-        "updated": int(time.time() * 1000),
-        "zones": ZONES,
-        "vessels": kept,
-    }
-    (OUT_DIR / "ais.json").write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"ais.json : {(OUT_DIR / 'ais.json').stat().st_size // 1024} Ko")
+    print(f"{len(vessels)} navires repris du relevé précédent")
+    asyncio.run(run(key, vessels))
 
 
 if __name__ == "__main__":
