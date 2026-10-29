@@ -6,7 +6,9 @@ Exécuté par GitHub Actions (voir .github/workflows/positions.yml) :
   3. ajoute les nouvelles positions à l'historique (data/history.json) ;
   4. écrit positions.json, lu par le plugin Windy.
 
-Format de pos.txt :  classement;numéro;latitude;longitude;jj/mm/aa hh:mm:ss;
+Format de pos.txt :  classement;numéro;latitude;longitude;date heure;cap/vitesse
+  - date : mm/jj/aa (format américain, utilisé depuis le 29/10) ou jj/mm/aa — les deux sont acceptés ;
+  - cap/vitesse (facultatif) : « 109/0.0 » = route fond 109°, vitesse fond 0,0 nœud.
 Les coordonnées sont en DEGRÉS.MINUTES : 48.3900N = 48°39,00' N (et non 48,39°).
 """
 
@@ -24,6 +26,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HISTORY = ROOT / "data" / "history.json"
 OUTPUT = ROOT / "positions.json"
+
+# Les traces ne commencent qu'au départ de la course (on ignore les positions de test / au ponton)
+TRACK_FROM_MS = int(datetime(2026, 11, 1, tzinfo=timezone.utc).timestamp() * 1000)
 
 ID_DIR = "Adrena_dcc/ID bateaux"
 ID_FILES = {
@@ -95,6 +100,29 @@ def ddmm_to_deg(value: str) -> float:
     return -out if hemi in ("S", "W") else out
 
 
+def parse_date(raw: str) -> datetime:
+    """Accepte mm/jj/aa et jj/mm/aa ; en cas d'ambiguïté (ex. 11/05/26), garde la date la plus proche d'aujourd'hui."""
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for fmt in ("%m/%d/%y %H:%M:%S", "%d/%m/%y %H:%M:%S"):
+        try:
+            candidates.append(datetime.strptime(raw.strip(), fmt).replace(tzinfo=timezone.utc))
+        except ValueError:
+            pass
+    if not candidates:
+        raise ValueError(f"date illisible « {raw} »")
+    return min(candidates, key=lambda d: abs((d - now).total_seconds()))
+
+
+def parse_cog_sog(raw: str) -> tuple[int | None, float | None]:
+    """'109/0.0' -> (109, 0.0)."""
+    try:
+        cog, sog = raw.split("/")
+        return round(float(cog)) % 360, round(float(sog), 1)
+    except ValueError:
+        return None, None
+
+
 def parse_positions(text: str) -> list[dict]:
     out = []
     for line in text.splitlines():
@@ -102,13 +130,16 @@ def parse_positions(text: str) -> list[dict]:
         if len(cells) < 5 or not cells[1].isdigit():
             continue
         try:
-            t = datetime.strptime(cells[4], "%d/%m/%y %H:%M:%S").replace(tzinfo=timezone.utc)
+            t = parse_date(cells[4])
+            cog, sog = parse_cog_sog(cells[5]) if len(cells) > 5 and "/" in cells[5] else (None, None)
             out.append({
                 "rank": int(cells[0]) if cells[0].isdigit() else None,
                 "id": int(cells[1]),
                 "lat": round(ddmm_to_deg(cells[2]), 5),
                 "lon": round(ddmm_to_deg(cells[3]), 5),
                 "t": int(t.timestamp() * 1000),
+                "cog": cog,
+                "sog": sog,
             })
         except ValueError as err:
             print(f"Ligne ignorée ({err}) : {line}")
@@ -151,15 +182,25 @@ def main() -> None:
     history: dict[str, list[list[float]]] = {}
     if HISTORY.exists():
         history = json.loads(HISTORY.read_text(encoding="utf-8"))
+    # Purge des points d'avant le départ (données de test du FTP)
+    history = {k: [pt for pt in v if pt[0] >= TRACK_FROM_MS] for k, v in history.items()}
     added = 0
     for p in positions:
         track = history.setdefault(str(p["id"]), [])
+        if p["t"] < TRACK_FROM_MS:
+            continue  # position d'avant-course : publiée mais pas ajoutée à la trace
         if track and track[-1][0] >= p["t"]:
             continue  # position déjà connue
         track.append([p["t"], p["lat"], p["lon"]])
         added += 1
-    print(f"{added} nouvelle(s) position(s)")
-    if added == 0 and OUTPUT.exists():
+    print(f"{added} nouvelle(s) position(s) ajoutée(s) aux traces")
+    previous_fix = None
+    if OUTPUT.exists():
+        try:
+            previous_fix = json.loads(OUTPUT.read_text(encoding="utf-8")).get("lastFix")
+        except ValueError:
+            pass
+    if added == 0 and previous_fix == max(p["t"] for p in positions):
         print("Rien de nouveau : fichiers inchangés")
         return
 
@@ -167,8 +208,9 @@ def main() -> None:
     for p in positions:
         info = boats.get(p["id"], {"id": p["id"], "cls": "?", "skipper": "", "boat": f"N°{p['id']}"})
         track = history.get(str(p["id"]), [])
-        sog = cog = None
-        if len(track) >= 2:
+        # Cap et vitesse fournis par la balise ; sinon calculés entre les 2 dernières positions
+        sog, cog = p["sog"], p["cog"]
+        if sog is None and len(track) >= 2:
             (t1, la1, lo1), (t2, la2, lo2) = track[-2], track[-1]
             hours = (t2 - t1) / 3600e3
             if hours > 0:
@@ -179,6 +221,7 @@ def main() -> None:
 
     data = {
         "updated": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "lastFix": max(p["t"] for p in positions),
         "boats": out_boats,
         "tracks": history,
     }
