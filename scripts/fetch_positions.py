@@ -175,6 +175,10 @@ def main() -> None:
     positions = parse_positions(ftp_read(ftp, "pos.txt"))
     ftp.quit()
     print(f"{len(boats)} bateaux connus, {len(positions)} positions lues")
+    # Heure (UTC) de la position la plus récente, lue par la tâche GitHub pour savoir
+    # si le relevé de l'heure est arrivé
+    last = datetime.fromtimestamp(max(p["t"] for p in positions) / 1000, timezone.utc)
+    print(f"LASTFIX_HOUR={last:%Y%m%d%H}")
     if not positions:
         sys.exit("pos.txt vide ou illisible : rien à faire")
 
