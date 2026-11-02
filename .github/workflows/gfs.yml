@@ -1,23 +1,26 @@
 name: gfs-longue-portee
 
-# Télécharge le vent GFS (NOAA) sur 16 jours au-dessus de l'Atlantique
-# et le publie sur la branche « gfs » (lue par le plugin via raw.githubusercontent.com).
+# Surveille la NOAA : toutes les 15 min, vérifie si un run GFS plus récent est complet
+# (jusqu'à +384 h) ; si oui, le télécharge et le publie sur la branche « gfs ».
+# Chaque lancement dure ~5 h 40 puis relance lui-même le suivant ;
+# la programmation horaire de GitHub (peu fiable) reste en secours.
 on:
     schedule:
-        - cron: '35 5,11,17,23 * * *' # ~5 h 30 après chaque run GFS (00, 06, 12, 18 UTC)
+        - cron: '23 * * * *'
     workflow_dispatch:
 
 permissions:
     contents: write
+    actions: write # pour relancer le lancement suivant
 
 concurrency:
     group: gfs
-    cancel-in-progress: true
+    cancel-in-progress: false
 
 jobs:
     gfs:
         runs-on: ubuntu-latest
-        timeout-minutes: 30
+        timeout-minutes: 355
         steps:
             - uses: actions/checkout@v4
 
@@ -28,15 +31,31 @@ jobs:
             - name: Installer ecCodes (lecture des fichiers GRIB)
               run: pip install eccodes
 
-            - name: Télécharger et convertir le GFS
-              run: python scripts/fetch_gfs.py
-
-            - name: Publier sur la branche gfs
+            - name: Surveiller les runs GFS et publier
               run: |
-                  cd gfs
-                  git init -q -b gfs
-                  git add gfs.bin gfs.json
-                  git -c user.name="gfs-bot" -c user.email="gfs-bot@users.noreply.github.com" \
-                      commit -q -m "GFS $(date -u +'%d/%m %H:%M') UTC"
-                  # Historique écrasé à chaque fois : le dépôt ne grossit pas
-                  git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gfs
+                  END=$(( $(date +%s) + 340 * 60 ))
+                  REMOTE="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+                  while [ "$(date +%s)" -lt "$END" ]; do
+                    # Heure du run actuellement publié
+                    PUBLISHED_REF=$(curl -s "https://raw.githubusercontent.com/${{ github.repository }}/gfs/gfs.json?t=$(date +%s)" \
+                      | python -c "import sys,json; print(json.load(sys.stdin).get('ref',0))" 2>/dev/null || echo 0)
+                    export PUBLISHED_REF
+                    rm -rf gfs
+                    if python scripts/fetch_gfs.py && [ -f gfs/gfs.bin ]; then
+                      cd gfs
+                      git init -q -b gfs
+                      git add gfs.bin gfs.json
+                      git -c user.name="gfs-bot" -c user.email="gfs-bot@users.noreply.github.com" \
+                          commit -q -m "GFS $(date -u +'%d/%m %H:%M') UTC"
+                      git push -f -q "$REMOTE" gfs && echo "$(date -u +%H:%M) nouveau run publié"
+                      cd ..
+                    fi
+                    sleep 900
+                  done
+
+            # Relais : lance le lancement suivant juste avant la fin de celui-ci
+            - name: Lancer la suite
+              if: success()
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: gh workflow run "gfs.yml" --ref "${{ github.ref_name }}" -R "${{ github.repository }}"
