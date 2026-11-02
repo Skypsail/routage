@@ -12,6 +12,7 @@ valeur en nœuds = octet × scale (0,5). u > 0 : vent portant vers l'est ; v > 0
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -135,6 +136,11 @@ def main() -> None:
     n_lat = int((LAT_MAX - LAT_MIN) / STEP) + 1
     n_lon = int((LON_MAX - LON_MIN) / STEP) + 1
     cycle = latest_complete_cycle()
+    # Run déjà publié ? (heure du run publié passée par la tâche GitHub)
+    published = int(os.environ.get("PUBLISHED_REF", "0") or 0)
+    if int(cycle.timestamp() * 1000) <= published:
+        print(f"Run {cycle:%Y-%m-%d %H}z déjà publié : rien à faire")
+        sys.exit(0)
     print(f"Run GFS {cycle:%Y-%m-%d %H}z, grille {n_lat}×{n_lon}, {len(HOURS)} échéances")
 
     data = bytearray()
