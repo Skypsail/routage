@@ -45,7 +45,7 @@ jobs:
                     # Fenêtre H+0 → H+12 min, tant que le relevé de l'heure n'est pas arrivé
                     if [ "$MIN" -le 12 ] && [ "$HOUR" != "$DONE_HOUR" ]; then
                       if OUT=$(python scripts/fetch_positions.py 2>&1); then
-                        echo "$OUT" | tail -2
+                        echo "$OUT" | grep -E "positions lues|LASTFIX|nouvelle|Rien de nouveau|ignorée" | tail -4
                         git add positions.json data/history.json
                         if ! git diff --cached --quiet; then
                           git commit -q -m "Positions $(date -u +'%d/%m %H:%M') UTC"
@@ -60,7 +60,8 @@ jobs:
                           echo "$(date -u +%H:%M) relevé de l'heure récupéré, pause jusqu'à la prochaine heure"
                         fi
                       else
-                        echo "$(date -u +%H:%M) FTP en échec, nouvel essai dans 2 min"
+                        echo "$(date -u +%H:%M) relevé en échec, nouvel essai dans 2 min :"
+                        echo "$OUT" | tail -5
                       fi
                       sleep 120
                     else
