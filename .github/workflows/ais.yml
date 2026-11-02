@@ -11,6 +11,7 @@ on:
 
 permissions:
     contents: write
+    actions: write # pour relancer le lancement suivant
 
 concurrency:
     group: ais
@@ -40,3 +41,11 @@ jobs:
                   PUBLISH_EVERY: '150'
                   PUSH_URL: https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
               run: python scripts/fetch_ais.py
+
+            # Relais : lance le lancement suivant juste avant la fin de celui-ci
+            # (la programmation horaire de GitHub n'est pas fiable ; elle reste en secours)
+            - name: Lancer la suite
+              if: success() # pas de relance en boucle si le relevé échoue (ex. clé refusée)
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: gh workflow run "ais.yml" --ref "${{ github.ref_name }}" -R "${{ github.repository }}"
