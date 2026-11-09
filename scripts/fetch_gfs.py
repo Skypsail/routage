@@ -140,7 +140,7 @@ WAVE_PARAMS = {(10, 0, 3): "hs", (10, 0, 10): "dir", (10, 0, 11): "per"}
 WAVE_SCALE = {"hs": 0.1, "dir": 2.0, "per": 0.1}
 
 
-def wave_filter_url(cycle: datetime, fh: int) -> str:
+def wave_filter_url(cycle: datetime, fh: int, left: float, right: float) -> str:
     d, h = cycle.strftime("%Y%m%d"), cycle.strftime("%H")
     q = {
         "file": f"gfswave.t{h}z.global.0p25.f{fh:03d}.grib2",
@@ -148,8 +148,8 @@ def wave_filter_url(cycle: datetime, fh: int) -> str:
         "var_DIRPW": "on",
         "var_PERPW": "on",
         "subregion": "",
-        "leftlon": LON_MIN,
-        "rightlon": LON_MAX,
+        "leftlon": left,
+        "rightlon": right,
         "toplat": LAT_MAX,
         "bottomlat": LAT_MIN,
         "dir": f"/gfs.{d}/{h}/wave/gridded",
@@ -158,7 +158,8 @@ def wave_filter_url(cycle: datetime, fh: int) -> str:
 
 
 def decode_waves(grib: bytes, n_lat: int, n_lon: int) -> dict[str, list[float]]:
-    """Grille 0,25° → points des degrés entiers ; NaN sur terre."""
+    """Grille 0,25° → points des degrés entiers ; NaN sur terre.
+    Plusieurs messages d'un même paramètre (zones découpées) sont fusionnés."""
     out: dict[str, list[float]] = {}
     pos = 0
     while pos < len(grib):
@@ -184,16 +185,17 @@ def decode_waves(grib: bytes, n_lat: int, n_lon: int) -> dict[str, list[float]]:
             lons = eccodes.codes_get_array(gid, "longitudes")
         finally:
             eccodes.codes_release(gid)
-        grid = [float("nan")] * (n_lat * n_lon)
+        grid = out.setdefault(comp, [float("nan")] * (n_lat * n_lon))
         for val, la, lo in zip(values, lats, lons):
             lo = ((lo + 180) % 360) - 180
-            if abs(la - round(la)) > 1e-6 or abs(lo - round(lo)) > 1e-6:
-                continue  # on ne garde que les degrés entiers (grille 1°)
+            # On ne garde que les degrés entiers (grille 1°). Tolérance large : la grille des vagues
+            # NOAA est décalée de quelques millionièmes de degré (ex. 275,000012°).
+            if abs(la - round(la)) > 1e-3 or abs(lo - round(lo)) > 1e-3:
+                continue
             i = round((la - LAT_MIN) / STEP)
             j = round((lo - LON_MIN) / STEP)
             if 0 <= i < n_lat and 0 <= j < n_lon and val != missing:
                 grid[i * n_lon + j] = float(val)
-        out[comp] = grid
     for comp in ("hs", "dir", "per"):
         if comp not in out:
             raise ValueError(f"{comp} manquant dans le fichier GRIB des vagues")
@@ -215,7 +217,7 @@ def fetch_waves(cycle: datetime, n_lat: int, n_lon: int, wind_times: list[int]) 
         if t not in wind_times:
             break
         try:
-            w = decode_waves(http_get(wave_filter_url(cycle, fh)), n_lat, n_lon)
+            w = decode_waves(http_get(wave_filter_url(cycle, fh, LON_MIN, LON_MAX)), n_lat, n_lon)
         except Exception as err:  # noqa: BLE001
             print(f"Vagues +{fh} h illisibles ({err}) : arrêt ici")
             break
@@ -223,7 +225,10 @@ def fetch_waves(cycle: datetime, n_lat: int, n_lon: int, wind_times: list[int]) 
             data.extend(to_uint8(x if comp != "dir" else x % 360, WAVE_SCALE[comp]) for x in w[comp])
         times.append(t)
         if fh % 48 == 0:
-            print(f"  vagues +{fh} h OK")
+            ok = sum(1 for x in w["hs"] if x == x)
+            print(f"  vagues +{fh} h OK ({ok} points en mer sur {n_lat * n_lon})")
+            if fh == 0 and ok < 0.4 * n_lat * n_lon:
+                raise ValueError(f"trop peu de points de vagues ({ok}) : grille incomplète")
         time.sleep(0.6)
     if len(times) < 40:
         print(f"Vagues : seulement {len(times)} échéances, non publiées")
