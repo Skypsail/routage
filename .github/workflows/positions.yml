@@ -44,15 +44,25 @@ jobs:
                     HOUR=$(date -u +%Y%m%d%H)
                     # Fenêtre H+0 → H+12 min, tant que le relevé de l'heure n'est pas arrivé
                     if [ "$MIN" -le 12 ] && [ "$HOUR" != "$DONE_HOUR" ]; then
+                      # Toujours repartir de la dernière version publiée (évite tout conflit si une autre
+                      # exécution ou une modification à la main a touché le dépôt entre-temps)
+                      git rebase --abort 2>/dev/null || true
+                      git fetch -q origin "${{ github.ref_name }}" && git reset -q --hard "origin/${{ github.ref_name }}"
                       if OUT=$(python scripts/fetch_positions.py 2>&1); then
                         echo "$OUT" | grep -E "positions lues|LASTFIX|nouvelle|Rien de nouveau|ignorée" | tail -4
                         git add positions.json data/history.json
                         if ! git diff --cached --quiet; then
                           git commit -q -m "Positions $(date -u +'%d/%m %H:%M') UTC"
-                          for i in 1 2 3; do
-                            git pull -q --rebase && git push -q && echo "$(date -u +%H:%M) publié" && break
-                            sleep 5
-                          done
+                          if git push -q origin "HEAD:${{ github.ref_name }}"; then
+                            echo "$(date -u +%H:%M) publié"
+                          else
+                            # Le dépôt a bougé entre-temps : on abandonne ce commit, le relevé sera
+                            # recalculé à partir de la version publiée au prochain essai (2 min)
+                            echo "$(date -u +%H:%M) publication refusée (dépôt modifié entre-temps), nouvel essai"
+                            git reset -q --hard "origin/${{ github.ref_name }}"
+                            sleep 120
+                            continue
+                          fi
                         fi
                         # Relevé de l'heure reçu (position datée de cette heure) : on arrête jusqu'à H+1
                         if echo "$OUT" | grep -q "LASTFIX_HOUR=$HOUR"; then
